@@ -1,19 +1,14 @@
 // Code for controlling thrust vanes on MK2 Inconel engine
 
-#define testing 0               // Change to 1 before testing / flight    !!!!!!!!!!!!!!
 #include <Wire.h>
 #include <Servo.h>
 #include <SPI.h>
 #include <SD.h>
 #include <RTClib.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BNO055.h>
-#include <utility/imumaths.h>
 #include <avr/pgmspace.h>
 #include <Telemetry.h>
 #include <HX711.h>
 
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
 Servo servo1;
 Servo servo2;
 Servo servo3;
@@ -23,41 +18,41 @@ File dataFile;
 char filename[] = "DATA000.csv";
 
 #define LED           10        // LED signals errors
-#define servo1Pin     2         // pins for controlling servos
-#define servo2Pin     3
-#define servo3Pin     0
-#define servo4Pin     1
-#define feedback1     4         // pins reading servo feedback
-#define feedback2     5
-#define feedback3     6
-#define feedback4     7
+#define servo1Pin     A0        // pins for controlling servos
+#define servo2Pin     A1
+#define servo3Pin     A3
+#define servo4Pin     A2
 
-#define DOUT          8         // pins reading load cell
-#define CLK           9
-HX711 scale(DOUT, CLK);
+#define forcePin1           13        // pins reading load cell
+#define forcePin2           12        // load cell 2 has issues
+#define forcePin3           11
+#define forcePin4           10
+#define CLK                 9
+#define force1Offset        122800
+#define force2Offset        8388607   // will set not working output to 0
+#define force3Offset        507600
+#define force4Offset        428700
+#define force1Scale         5/106000
+#define force2Scale         1//5/400000
+#define force3Scale         5/430000
+#define force4Scale         5/440000
+/*HX711 scale1(forcePin1, CLK);         // for load cells, hangs without load cell connected
+HX711 scale2(forcePin2, CLK);
+HX711 scale3(forcePin3, CLK);
+HX711 scale4(forcePin4, CLK);*/
 float force1, force2, force3, force4;
-
-#define loopDelay     200                     // min 200 with SD enabled
-#define dataTime ((float)loopDelay)/1000      // time between data
-#define SDdelay       20
-#define flagIncrement 10
-#define sdErrorLimit  2         // # of times SD card access can fail before it is no longer attempted
-int flag = 0;       long checkSD;
 
 // Offsets to make servos align vertically at v=90
 #define servo1Offset  90        // for MG995 #1
-#define servo2Offset  90        // for MG995 #2
-#define servo3Offset  90
-#define servo4Offset  90
+#define servo2Offset  84        // for MG995 #2
+#define servo3Offset  83
+#define servo4Offset  83
 #define vMax          20        // max angular deflection (avoids stall)
-int v1 = servo1Offset;
-int v2 = servo2Offset;
-int v3 = servo3Offset;
-int v4 = servo4Offset;
-int fb1, fb2, fb3, fb4;
+int v1 = 0, v2 = 0, v3 = 0, v4 = 0;
+//int v1 = servo1Offset, v2 = servo2Offset, v3 = servo3Offset, v4 = servo4Offset;
 
-int v1inc = 2;
-int v2inc = 2;
+int v1inc = 10;
+int v2inc = v1inc;
 
 #define SEND_VECTOR_ITEM(field, value)\
   SEND_ITEM(field, value.x())         \
@@ -72,140 +67,272 @@ int v2inc = 2;
   WRITE_CSV_ITEM(value.y())           \
   WRITE_CSV_ITEM(value.z())
 
-unsigned int missed_deadlines = 0;
 long time1, time2;
+long testLength = 1000;
 
 
 void setup() {
-  if (testing) { pinMode(LED,OUTPUT); }             // makes LED flash brightly
-  pinMode(feedback1,INPUT);
-  pinMode(feedback2,INPUT);
-  pinMode(feedback3,INPUT);
-  pinMode(feedback4,INPUT);
-  
+  Serial.begin(38400, SERIAL_8N2);    Serial.println("Starting...");
   servo1.attach(servo1Pin);
   servo2.attach(servo2Pin);
   servo3.attach(servo3Pin);
   servo4.attach(servo4Pin);
+  servo1.write(servo1Offset);
+  servo2.write(servo2Offset);
+  servo3.write(servo3Offset);
+  servo4.write(servo4Offset);
   
-  servo1.write(v1+servo1Offset);
-  servo2.write(v2+servo2Offset);
-  servo3.write(v3+servo3Offset);
-  servo4.write(v4+servo4Offset);
+  //scale.set_scale(20400);                           // Value obtained using SparkFun_HX711_Calibration sketch
+  //scale.tare();                                     // Resets the scale to 0, assumes no weight at start up
   
-  Serial.begin(38400, SERIAL_8N2);    Serial.println();
-  scale.set_scale(20400);                           // Value obtained using SparkFun_HX711_Calibration sketch
-  scale.tare();                                     // Resets the scale to 0, assumes no weight at start up
-  
-  while (!bno.begin()) {                            // flashes to signal error
-    Serial.println(F("BNO055 err"));
-    digitalWrite(LED,LOW); delay(1000); digitalWrite(LED,HIGH);
-  }
   if (!RTC.isrunning()) { RTC.adjust(DateTime(__DATE__, __TIME__)); }
-  if (!SD.begin(10)) { Serial.println(F("SD err")); }
-  else {                                            // generates file name
-    for (uint16_t nameCount = 0; nameCount < 1000; nameCount++) {
-      filename[4] = nameCount/100 + '0';
-      filename[5] = (nameCount%100)/10 + '0';
-      filename[6] = nameCount%10 + '0';
-      if (!SD.exists(filename)) {                   // opens if file doesn't exist
-        dataFile = SD.open(filename, FILE_WRITE);
-        Serial.print(F("\twriting "));
-        Serial.println(filename);
-        dataFile.println(F("abs time,sys date,sys time,servo1_set,servo2_set,servo3_set,servo4_set,servo1_fb,servo2_fb,servo3_fb,servo4_fb,force1,force2,force3,force4"));
-        //dataFile.println(F("abs time,sys date,sys time,servo1_set,servo2_set,servo1_fb,servo2_fb,force1"));
-        break;
-      }
-    }
-  }
 }
 
 
 void loop() {
-  long time0 = millis();
+  long time0 = millis();// - testRestart;
   
-  // Simulates changing servo angle setting
+  // TESTS TO PERFORM ////////////////////
+  // Tandem All
+  if      (time0 > testLength*60 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*59 ) {
+        v1 = -vMax;       v2 = -vMax;
+        v3 = -vMax;       v4 = -vMax;}
+  else if (time0 > testLength*58 ) {
+        v1 = vMax;        v2 = vMax;
+        v3 = vMax;        v4 = vMax; }
+  else if (time0 > testLength*57 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  
+  // Tandem 2,4
+  else if (time0 > testLength*56 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*55 ) {
+        v1 = 0;           v2 = vMax;
+        v3 = 0;           v4 = -vMax; }
+  else if (time0 > testLength*54 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*53 ) {
+        v1 = 0;           v2 = -vMax;
+        v3 = 0;           v4 = vMax; }
+  else if (time0 > testLength*52 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*51 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*50 ) {
+        v1 = 0;           v2 = -vMax;
+        v3 = 0;           v4 = -vMax; }
+  else if (time0 > testLength*49 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*48 ) {
+        v1 = 0;           v2 = vMax;
+        v3 = 0;           v4 = vMax; }
+  else if (time0 > testLength*47 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+
+  // Tandem 1,3
+  else if (time0 > testLength*46 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*45 ) {
+        v1 = vMax;        v2 = 0;
+        v3 = -vMax;       v4 = 0; }
+  else if (time0 > testLength*44 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*43 ) {
+        v1 = -vMax;       v2 = 0;
+        v3 = vMax;        v4 = 0; }
+  else if (time0 > testLength*42 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*41 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*40 ) {
+        v1 = -vMax;       v2 = 0;
+        v3 = -vMax;       v4 = 0; }
+  else if (time0 > testLength*39 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*38 ) {
+        v1 = vMax;        v2 = 0;
+        v3 = vMax;        v4 = 0; }
+  else if (time0 > testLength*37 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+        
+  // Single 4
+  else if (time0 > testLength*36 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*35 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = -vMax; }
+  else if (time0 > testLength*34 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = vMax; }
+  else if (time0 > testLength*33 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*32 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*31 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = -vMax; }
+  else if (time0 > testLength*30 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*29 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = vMax; }
+  else if (time0 > testLength*28 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+        
+  // Single 3
+  else if (time0 > testLength*27 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*26 ) {
+        v1 = 0;           v2 = 0;
+        v3 = -vMax;       v4 = 0; }
+  else if (time0 > testLength*25 ) {
+        v1 = 0;           v2 = 0;
+        v3 = vMax;        v4 = 0; }
+  else if (time0 > testLength*24 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*23 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*22 ) {
+        v1 = 0;           v2 = 0;
+        v3 = -vMax;       v4 = 0; }
+  else if (time0 > testLength*21 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*20 ) {
+        v1 = 0;           v2 = 0;
+        v3 = vMax;        v4 = 0; }
+  else if (time0 > testLength*19 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+        
+  // Single 2
+  else if (time0 > testLength*18 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*17 ) {
+        v1 = 0;           v2 = -vMax;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*16 ) {
+        v1 = 0;           v2 = vMax;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*15 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*14 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*13 ) {
+        v1 = 0;           v2 = -vMax;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*12 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*11 ) {
+        v1 = 0;           v2 = vMax;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*10 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+
+  // Single 1
+  else if (time0 > testLength*9 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*8 ) {
+        v1 = -vMax;       v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*7 ) {
+        v1 = vMax;        v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*6 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*5 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*4 ) {
+        v1 = -vMax;       v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*3 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*2 ) {
+        v1 = vMax;        v2 = 0;
+        v3 = 0;           v4 = 0; }
+  else if (time0 > testLength*1 ) {
+        v1 = 0;           v2 = 0;
+        v3 = 0;           v4 = 0; }
+  
+  Serial.print(v1); Serial.print("  "); Serial.print(v2); Serial.print("  "); Serial.print(v3); Serial.print("  "); Serial.println(v4);
+  ///////////////////////////////////////////////////
+  
+  /*// Simulates changing servo angle setting
   if      (v1 >= servo1Offset+vMax) { v1inc = -v1inc; }   
   else if (v1 <= servo1Offset-vMax) { v1inc = -v1inc; }
   if      (v2 >= servo2Offset+vMax) { v2inc = -v2inc; }
   else if (v2 <= servo2Offset-vMax) { v2inc = -v2inc; }
   v1 = v1 + v1inc;
   v2 = v2 + v2inc;
-  
+  v3 = v3 + v1inc;
+  v4 = v4 + v2inc;
   servo1.write(v1);
   servo2.write(v2);
   servo3.write(v3);
-  servo4.write(v4);
-  fb1 = analogRead(feedback1)-servo1Offset;
-  fb2 = analogRead(feedback2)-servo2Offset;
-  fb3 = analogRead(feedback3)-servo3Offset;
-  fb4 = analogRead(feedback4)-servo4Offset;
+  servo4.write(v4);*/
   
-  //force1= scale.get_units();              // Forces in lb
-  //force2= scale.get_units();
-  //force3= scale.get_units();
-  //force4= scale.get_units();
+  servo1.write(v1 + servo1Offset);
+  servo2.write(v2 + servo2Offset);
+  servo3.write(v3 + servo3Offset);
+  servo4.write(v4 + servo4Offset);
   
-  // Downlink
+  /*force1= scale1.get_units();              // Forces (converted to pounds by force1Scale
+  force2= scale2.get_units();
+  force3= scale3.get_units();
+  force4= scale4.get_units();
+  Serial.print("force1:"); Serial.print((force1-force1Offset)*force1Scale);
+  Serial.print("\t"); Serial.print("force2:"); Serial.print((force2-force2Offset)*force2Scale);
+  Serial.print("\t"); Serial.print("force3:"); Serial.print((force3-force3Offset)*force3Scale);
+  Serial.print("\t"); Serial.print("force4:"); Serial.println((force4-force4Offset)*force4Scale);
+  */
+  
+  /*// Downlink
   BEGIN_SEND
   SEND_ITEM(servo1_set, v1);                // 4 ms
   SEND_ITEM(servo2_set, v2);                // 4 ms
   SEND_ITEM(servo3_set, v3);
   SEND_ITEM(servo4_set, v4);
-  
   SEND_ITEM(servo1_fb, fb1);
   SEND_ITEM(servo2_fb, fb2);
   SEND_ITEM(servo3_fb, fb3);
   SEND_ITEM(servo4_fb, fb4);
-  SEND_ITEM(force1, force1);
+  //SEND_ITEM(force1, force1);
   //SEND_ITEM(force2, force2);
   //SEND_ITEM(force3, force3);
   //SEND_ITEM(force4, force4);
-  END_SEND
-  
-// Writing to SD Card
-  if ((flag<flagIncrement*sdErrorLimit-sdErrorLimit)&&(flag>0))   { flag--; }
-  if ((flag<flagIncrement*sdErrorLimit-sdErrorLimit)&&(dataFile)) {
-    DateTime now = RTC.now();           checkSD = millis();     // checks for SD removal
-    dataFile.print(millis());           dataFile.print(',');
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    dataFile.print(now.year()  ,DEC);   dataFile.print('/');
-    dataFile.print(now.month() ,DEC);   dataFile.print('/');
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    dataFile.print(now.day()   ,DEC);   dataFile.print(',');
-    dataFile.print(now.hour()  ,DEC);   dataFile.print(':');
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    dataFile.print(now.minute(),DEC);   dataFile.print(':');
-    dataFile.print(now.second(),DEC);
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    WRITE_CSV_ITEM(v1)
-    WRITE_CSV_ITEM(v2)
-    WRITE_CSV_ITEM(v3)
-    WRITE_CSV_ITEM(v4)
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    WRITE_CSV_ITEM(fb1)
-    WRITE_CSV_ITEM(fb2)
-    WRITE_CSV_ITEM(fb3)
-    WRITE_CSV_ITEM(fb4)
-        if (millis()>checkSD+SDdelay){flag=flag+flagIncrement; goto timedout;}
-    WRITE_CSV_ITEM(force1)
-    WRITE_CSV_ITEM(force2)
-    WRITE_CSV_ITEM(force3)
-    WRITE_CSV_ITEM(force4)
-    timedout:
-    dataFile.println();     dataFile.flush();
-  }
-  
-  if (time0 + loopDelay < millis()) {
-    Serial.print(F("Schedule err: "));
-    Serial.println(time0 + loopDelay - (signed long)millis());
-    missed_deadlines++;
-    SEND(missed_deadlines, missed_deadlines);
-  }
-  else {
-    if(flag>=flagIncrement*sdErrorLimit-sdErrorLimit) { digitalWrite(LED,LOW); }
-    delay(time0 + loopDelay - millis());    // continuously adjusted for desired dataTime
-    digitalWrite(LED,HIGH);
-  }
-  
+  END_SEND*/
+
 }
