@@ -14,10 +14,7 @@ Servo servo2;
 Servo servo3;
 Servo servo4;
 RTC_DS1307 RTC;
-File dataFile;
-char filename[] = "DATA000.csv";
 
-#define LED           10        // LED signals errors
 #define servo1Pin     A0        // pins for controlling servos
 #define servo2Pin     A1
 #define servo3Pin     A3
@@ -47,14 +44,12 @@ float force1, force2, force3, force4;
 #define servo2Offset  84        // for MG995 #2
 #define servo3Offset  83
 #define servo4Offset  83
-#define vMax          20        // max angular deflection (avoids stall)
+#define vMax          10        // max angular deflection (avoids stall)
 int v1 = 0, v2 = 0, v3 = 0, v4 = 0;
 //int v1 = servo1Offset, v2 = servo2Offset, v3 = servo3Offset, v4 = servo4Offset;
+long testLength = 1000;
 
-int v1inc = 10;
-int v2inc = v1inc;
-
-#define SEND_VECTOR_ITEM(field, value)\
+/*#define SEND_VECTOR_ITEM(field, value)\
   SEND_ITEM(field, value.x())         \
   SEND_GROUP_ITEM(value.y())          \
   SEND_GROUP_ITEM(value.z())
@@ -65,10 +60,7 @@ int v2inc = v1inc;
 #define WRITE_CSV_VECTOR_ITEM(value)  \
   WRITE_CSV_ITEM(value.x())           \
   WRITE_CSV_ITEM(value.y())           \
-  WRITE_CSV_ITEM(value.z())
-
-long time1, time2;
-long testLength = 1000;
+  WRITE_CSV_ITEM(value.z())*/
 
 
 void setup() {
@@ -90,7 +82,7 @@ void setup() {
 
 
 void loop() {
-  long time0 = millis();// - testRestart;
+  long time0 = millis();
   
   // TESTS TO PERFORM ////////////////////
   // Tandem All
@@ -289,21 +281,7 @@ void loop() {
   
   Serial.print(v1); Serial.print("  "); Serial.print(v2); Serial.print("  "); Serial.print(v3); Serial.print("  "); Serial.println(v4);
   ///////////////////////////////////////////////////
-  
-  /*// Simulates changing servo angle setting
-  if      (v1 >= servo1Offset+vMax) { v1inc = -v1inc; }   
-  else if (v1 <= servo1Offset-vMax) { v1inc = -v1inc; }
-  if      (v2 >= servo2Offset+vMax) { v2inc = -v2inc; }
-  else if (v2 <= servo2Offset-vMax) { v2inc = -v2inc; }
-  v1 = v1 + v1inc;
-  v2 = v2 + v2inc;
-  v3 = v3 + v1inc;
-  v4 = v4 + v2inc;
-  servo1.write(v1);
-  servo2.write(v2);
-  servo3.write(v3);
-  servo4.write(v4);*/
-  
+    
   servo1.write(v1 + servo1Offset);
   servo2.write(v2 + servo2Offset);
   servo3.write(v3 + servo3Offset);
@@ -325,14 +303,10 @@ void loop() {
   SEND_ITEM(servo2_set, v2);                // 4 ms
   SEND_ITEM(servo3_set, v3);
   SEND_ITEM(servo4_set, v4);
-  SEND_ITEM(servo1_fb, fb1);
-  SEND_ITEM(servo2_fb, fb2);
-  SEND_ITEM(servo3_fb, fb3);
-  SEND_ITEM(servo4_fb, fb4);
-  //SEND_ITEM(force1, force1);
-  //SEND_ITEM(force2, force2);
-  //SEND_ITEM(force3, force3);
-  //SEND_ITEM(force4, force4);
+  SEND_ITEM(force1, force1);
+  SEND_ITEM(force2, force2);
+  SEND_ITEM(force3, force3);
+  SEND_ITEM(force4, force4);
   END_SEND*/
 
 }
